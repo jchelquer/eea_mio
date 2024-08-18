@@ -1,0 +1,79 @@
+---
+title: "R Notebook Ejercicios 2"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+```{r librerías}
+library(glue)
+```
+
+```{r 2.1}
+# 1) Dataset EPH
+# El INDEC1 publica las bases de microdatos de la Encuesta Permanente de Hogares (EPH). Para este ejercicio deberán descargar la base “usu_individual_T120.txt” que corresponde a la base Individual del 1er trimestre de 2020 y se encuentra disponible en el campus.
+# 
+# a) Levantar y guardar la base en un objeto llamado individualt120. La misma usa como separador “;”.
+tiempo_read_table <- system.time({
+individualt120 <- read.table("./usu_individual_T122.txt.txt", sep = ";", header = TRUE)
+})
+
+# 
+# b)Visualizar el contenido del dataset. Hint: Se puede utilizar la funcion glimpse() de la libreria tibble para visualizar el contenido de la base, identificando dimensión, tipos de variables y primeros valores de cada una.
+# 
+library (tibble)
+glimpse(individualt120)
+
+# c) Guardar la base como un archivo de extensión .RDS con la función saveRDS() y volver a levantarla pero desde el nuevo archivo .RDS y asignarla con el nombre BaseRDS ¿tarda más o menos?sa
+saveRDS(individualt120, file="./individualt120.rds")
+tiempo_readRDS <- system.time({
+individualt120 <- readRDS(file="./individualt120.rds")
+})
+print ("Tiempo que demora read_table: ")
+print(tiempo_read_table)
+print ("Tiempo que demora read_RDS: ")
+print(tiempo_readRDS)
+
+
+
+```
+```{r 2.2}
+# 2) Función acumulado
+# a- Crear una función acumulado que calcule el valor acumulado (suma) de una variable numérica a designar X en un dataset también a designar df. Es decir, que brinde el valor resultante de acumulado(df, X).
+acumulado <- function(df, X){
+  return (sum(df[[X]]))
+}
+# 
+# b- Evalúela para la columna “PONDERA” del dataframe individual_T120.
+paste0("El acumulado de PONDERA es ", acumulado(individualt120, "PONDERA"))
+# 
+# c- Utilizar dicha función para calcular el acumulado de PONDERA por Sexo (variable CH04), sabiendo que 1 = varón y 2 = mujer.
+varones <- individualt120[individualt120$CH04==1,]
+mujeres <- individualt120[individualt120$CH04==2,]
+pondera_varón <- acumulado(varones, "PONDERA")
+pondera_mujer <- acumulado(mujeres, "PONDERA")
+glue ('El acumulado de PONDERA para varones es {pondera_varón}')
+glue ('El acumulado de PONDERA para mujeres es {pondera_mujer}')
+
+# 
+# d- Modificar la función anterior ( acumulado2) para que devuelva un vector que contenga la frecuencia poblacional (el acumulado calculado previamente) y la muestral (número de filas del dataset).
+
+acumulado2 <- function(df, X){
+  tibble('frecuencia_poblacional' = sum(df[[X]]), 'frecuencia_muestral' = nrow(df))
+}
+print (acumulado2(individualt120, "PONDERA"))
+
+
+# e- Utilizar la función modificada para calcular la frecuencias frecuencias muestrales y poblacionales por Sexo.
+acumulado2(varones, "PONDERA")
+acumulado2(mujeres, "PONDERA")
+
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
