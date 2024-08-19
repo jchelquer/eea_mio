@@ -1,0 +1,132 @@
+---
+title: "R Notebook Ejercicios 2_1  (clase 2 ej 1)"
+output: html_notebook
+---
+
+```{r librerías}
+library(glue)
+install.packages("tidyverse")
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+```
+
+```{r}
+dir_ds <- "G:/Mi unidad/Data Science y similares/Maestría Data Mining Exactas/EEA/eea_mio/datasets/"
+```
+
+```{r dolar}
+archivo=paste0(dir_ds, "/","dolar_oficial_ambito.csv")
+dolar <- read.table(archivo, sep = ",", header = TRUE)
+dolar$cotizacion_promedio <- (dolar$compra + dolar$venta)/2
+dolar$fecha <- dmy(dolar$fecha)
+head(dolar)
+
+# Gráfico de evolución
+ggplot(data = dolar, 
+       aes(x = fecha, cotizacion_promedio)) +
+  geom_line() + 
+  labs(title = "Evolución de cotización de dólar") 
+
+# Cálculo de la cotización por mes
+dolar_mes <- dolar %>%
+    group_by (año=year(fecha), mes=month(fecha)) %>%
+    summarise (cotizacion = median(cotizacion_promedio))
+dolar_mes
+
+```
+```{r IPC}
+archivo=paste0(dir_ds, "/","ipc-mensual.csv")
+ipc <- read.table(archivo, sep = ",", header = TRUE)
+head(ipc)
+# pasarlo a formato tidy
+
+# Los índices de cada fecha que están en columnas, los convierto en varios registros, uno por fecha
+ipc <- pivot_longer(data  = ipc,        #origen de datos
+                    names_to="fecha",   #cómo se va a llamar la columna
+                    cols=-Apertura,     #tomo todas las columnas SALVO Apertura
+                    values_to="indice") #Los valores de cada columna pasan a llamarse indice
+
+ipc <- ipc %>%
+  mutate(fecha = paste0("01-", fecha)) %>%
+  mutate(fecha=dmy(fecha)) %>%
+  mutate(dia=day(fecha)) %>%
+  mutate(mes=month(fecha)) %>%
+  mutate(año=year(fecha))
+
+ipc
+
+# Como hay un registro para cada tipo de apertura, armo otro ds con las aperturas en columnas
+
+ipc_por_mes <- pivot_wider(data=ipc,
+                           names_from=Apertura,        #las nuevas columnas son los valores de Apertura
+                           values_from=indice          #los valores de esos campos vienen de indice
+                           )
+ipc_por_mes
+#ipc[ipc$Apertura=="Nivel general",]   # esta es una forma
+ipc_filtrado <- ipc %>%
+  filter(Apertura=="Nivel general")
+
+
+# Gráfico de evolución del nivel general del IPC
+ggplot(data = ipc_filtrado, 
+       aes(x = fecha, indice)) +
+  geom_line() + 
+  labs(title = "Evolución del índice Nivel General") +
+  theme_minimal()
+# Gráfico de los 4 índices
+ggplot(ipc, aes(x = fecha, y = indice, color = Apertura)) +     #Qué bárbaro!!! Los separa solo!!!!
+  geom_line() +
+  labs(title = "Evolución del Índice por Tipo de Apertura",
+       x = "Fecha",
+       y = "Índice") +
+  theme_minimal()
+
+
+
+```
+```{r dolar_ipc}
+# Cruzar los datos de ipc con dolar 
+ipc_dolar <- merge(ipc, dolar_mes, by=c("año", "mes"))             #Los campos tienen que llamarse igual en ambos
+                                                                   # es un inner join! Sólo si ambos coinciden.
+ipc_dolar
+
+
+cotiz_dic_2016 <- dolar_mes[dolar_mes$año==2016 & dolar_mes$mes==12, c("cotizacion")]
+cot_dic16=cotiz_dic_2016$cotizacion
+ipc_dolar$indice_dolar=ipc_dolar$cotizacion*100/cot_dic16
+ipc_dolar
+
+# Gráfico de evolución del nivel general del IPC y del índice dolar
+ipc_filtrado <- ipc_dolar %>%
+  filter(Apertura=="Nivel general")
+# Crear el gráfico
+ggplot(data = ipc_filtrado, aes(x = fecha)) +
+  geom_line(aes(y = indice, color = "Índice"), size = 1) + 
+  geom_line(aes(y = indice_dolar, color = "Índice Dólar"), size = 1) +
+  labs(
+    title = "Evolución del Índice nivel general e Índice Dólar",
+    x = "Fecha",
+    y = "Valor",
+    color = "Leyenda"
+  ) +
+  theme_minimal()
+
+# Crear el gráfico
+ggplot(data = ipc_dolar, aes(x = fecha)) +
+  geom_line(aes(y = indice, color = Apertura), size = 1) + 
+  geom_line(aes(y = indice_dolar, color = "Índice Dólar"), size = 1) +
+  labs(
+    title = "Evolución de los Índices e Índice Dólar",
+    x = "Fecha",
+    y = "Valor",
+    color = "Leyenda"
+  ) +
+  theme_minimal()
+
+
+
+```
+
+  
