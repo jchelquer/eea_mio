@@ -1,0 +1,694 @@
+---
+title: "DID - explicación del método"
+output: 
+  html_notebook:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+author: Alejandro Blumenfeld, José Chelquer
+
+
+---
+# El método de DIferencia en Diferencias (DID)
+## Introducción
+Diferencia en Diferencias es un método cuasiexperimental usado con frecuencia para evaluar el impacto de un tratamiento o una intervención (p.ej. una política pública) que se implementan en el tiempo y donde no es posible disponer de grupos de control y experimentales adecuados.<BR>
+<BR>
+Para mayor claridad en la exposición se trabajará con <BO>datos sintetizados</BO> sobre un hipotético problema de reducción de las muertes por accidente de tránsito.
+<BR>
+
+## Setup
+```{r setup}
+# Configuración global para gráficos
+knitr::opts_chunk$set(
+  fig.width = 5,  # Ancho estándar en pulgadas
+  fig.height = 3, # Alto estándar en pulgadas
+  dpi = 300       # Resolución estándar
+)
+```
+## Librerías
+```{r librerías}
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(tibble)
+```
+## Funciones a usar
+### Grupo sintético
+La función genera n_unidades de filas u observaciones para cada uno de n_periodos La evolución de la variable de interés (valor) es básicamente lineal aunque pueden agregarse, si se quiere, derivadas de 2do y 3er orden.<BR>
+Si hay especificado un periodo_trat, en ese período se produce un salto en el valor (y eventualmente un cambio en alguna derivada) y los datos a partir de allí se marcan
+con la variable tratamiento=1<BR>
+Se puede agregar una lista de shoks: saltos de valor que ocurren en meses específicos.<BR>
+Se almacena un nombre para el grupo y un id que sólo es un placeholder, porque se completa según cómo se vaya a usar este grupo (como control o como tratamiento), <BR>
+A los datos se agrega ruido según una distribución normal con desvío sd.<BR>
+
+
+
+```{r funcion_grupo_sintetico}
+# Crea un dataframe de un grupo sintético a partir de parámetros
+
+grupo_sintetico <- function(
+    nom_grupo='sin nombre',   # nombre del grupo. 
+    n_unidades=50,            # cantidad de mediciones
+    n_periodos=10,            # cantidad total de periodos
+    
+    y0 = 12,                  # ordenada al origen
+    vPre = 0,                 # pendiente (velocidad) sin tratamiento
+    # para modelar comportamientos no lineales sencillos:
+    aPre=0,                   # aceleración pre tratamiento
+    d3Pre=0,                  # derivada 3era pre tratamiento
+    # para generar ruido
+    sd=0.05,                   # desvío estándar de los valores
+    
+    periodo_trat=Inf,         # periodo en que se aplica el tratamiento (o Inf si no lo recibe)
+    salto = -1,               # salto de valor debido al tratamiento 
+                              # se produce en el período_trat
+
+    
+    # Si se quiere, se puede modelar que el tratamiento no sólo produzca un salto
+    # en la variable de interés sino también un cambio en alguna de sus derivadas
+    
+    dcambia=0,              # 1:velocidad, 2:aceleración, 3:derivada tercera
+    dnueva=0,                # nuevo valor de la derivada dcambia
+    
+    
+    shocks=list() 
+    #shocks=list(6=10, 9=10   # lista de periodos en que hay un shock externo y su valor
+) 
+
+{
+# creo diccionario con los parámetros usados para crear el grupo, sólo para tenerlo registrado
+  dict_grupo = list(
+    nom_grupo=nom_grupo,
+    n_unidades=n_unidades,
+    n_periodos=n_periodos,
+    
+    y0=y0,
+    vPre=vPre,
+    aPre=aPre,
+    d3Pre=d3Pre,
+    sd=sd,
+
+    periodo_trat=periodo_trat,
+    dcambia=dcambia,
+    dnueva=dnueva,
+    salto=salto,
+    shocks=shocks
+  )
+
+    dict_grupos[[nom_grupo]]<<- dict_grupo     #almacena el diccionario
+    # ---------------------------
+    # Creación de grupo sintético
+    # ---------------------------
+    # Crear un dataframe vacío
+    ult_periodo=n_periodos-1
+    data <- data.frame(
+      # Numeración secuencial
+    id = rep(1:n_unidades, times = n_periodos),
+     # Repetir el 'grupo' n_unidades * n_periodos veces
+    nom_grupo = rep(nom_grupo, times = n_unidades * n_periodos),  
+     # Repetir los periodos, cada periodo 'n_unidades' veces
+    periodo = rep(0:ult_periodo, each = n_unidades),       
+    valor = NA,
+    grupo='0',
+    id_grupo=0,
+    tratamiento=0
+    )
+    
+    # Genero los valores base, sin el ruido 
+    valores_base=numeric(n_periodos)
+    tratamientos=numeric(n_periodos)
+    
+    # inicializa derivadas
+    velocidad=vPre
+    aceleracion=aPre
+    d3=d3Pre
+ 
+
+    for (periodo in seq(0, n_periodos-1)) {     #i: número de período
+        if (periodo < periodo_trat) {                #periodos sin tratamiento
+          tratamiento=0
+           }
+        else {                                 #periodos con tratarmiento
+          tratamiento=1
+          if (dcambia==1) {velocidad=dnueva}
+          if (dcambia==2) {aceleracion=dnueva}
+          if (dcambia==3) {d3=dnueva}
+        }
+        delta=0
+        if (periodo==periodo_trat){
+          delta=salto
+        }
+        # Shocks
+         #busco un schock para el período en cuestión
+        shock=shocks[[as.character(periodo)]]     
+        if (is.numeric(shock)){              # si hay un shock
+           # lo sumo al salto que podría haber eventualmente por el tratamiento
+          delta=delta+shock}                
+
+       # asignar valor calculado
+        i=periodo+1  # para no almacenar en subíndice 0
+        valores_base[i] <- ifelse(i == 1, y0, valores_base[i - 1] + velocidad + delta)
+        tratamientos[i]<-tratamiento
+        
+        # recalcular las derivadas 
+        aceleracion=aceleracion+d3
+        velocidad=velocidad+aceleracion
+        
+    }
+
+        # Asignar los valores con ruido
+      data$valor <- rep(valores_base, each = n_unidades) + 
+                  rnorm(n_unidades * n_periodos, mean = 0, sd = sd)
+   
+      # registrar meses pre y post tratamiento
+      data$tratamiento <-rep(tratamientos, each=n_unidades)
+      
+      # convertir el grupo en factor
+      data$grupo <- as.factor(data$id_grupo)
+      
+      
+
+      return (data)
+}
+
+```
+
+
+### Función de graficacion
+Grafica un dataset que contiene 1 o 2 grupos.<BR>
+El grupo 1 es el de tratamiento y el 0 el de referencia.<BR>
+Se puede elegir el período a graficar, los grupos a mostrar (0, 1 o 1 y 0).<BR>
+El gráfico muestra siempre la evolución promedio de ambos grupos.<BR>
+Opcionalmente, se puede indicar una cantidad de casos a seguir individualmente.<BR>
+Alternativamente, se puede pedir que solo se muestren los puntos sumados al promedio.<BR>
+Finalmente, se puede pedir dibuje con línea punteada la evolución supuesta (contrafáctica) del grupo de tratamiento en base al comportamiento del grupo de referencia.<BR>
+```{r funcion_graficacion}
+graficar_data <- function(data,                                 # dataframe con los grupos
+  desde_periodo = 1,                    # mostrar desde este período
+  hasta_periodo = max(data$periodo),    # hasta éste
+  grupos = sort(unique(data$grupo)),    # grupos a mostrar. 0: referencia 1: tratamiento
+  casos = 0,          # si casos > 0, se sigue la evolución de algunos casos
+  puntos = TRUE,      # mostrar los puntos (se usa sólo si casos=0)
+  contrafactico=FALSE # dibujar contrafáctico para el tratamiento en base al referencia
+)
+  {
+       # Filtrar por el rango de periodos y los grupos seleccionados
+       #  por fecha
+  data_filtrada <- data[data$periodo >= desde_periodo & data$periodo <= hasta_periodo, ] 
+       # por grupos
+  data_filtrada <- data_filtrada[data_filtrada$id_grupo %in% grupos, ]
+
+  # si se pide un contrafáctico, se lo construye en base al grupo de referencia (si lo hay...)
+  if (contrafactico && (!(0 %in% grupos) | (!(1 %in% grupos)))) {contrafactico <- FALSE}
+  if (contrafactico){
+    data_filtrada=data_con_contrafacticos(data_filtrada)
+  }
+  
+     # Si el parámetro casos es mayor que 0, seleccionamos aleatoriamente los casos
+ if (casos > 0) {
+  data_filtrada <- data_filtrada %>%
+    group_by(grupo) %>%
+    filter(id %in% sample(unique(id), size = min(casos, n_distinct(id)))) %>%
+    ungroup()  # Aseguramos que el grupo quede desagrupado
+ }
+  # Iniciar el gráfico
+  p <- ggplot(data_filtrada, aes(x = periodo, y = valor, color = grupo)) +
+                              # punteada para el contrafactico
+        scale_linetype_manual(values = c("solid", "solid", "dashed")) +    
+    labs(title = paste("Evolución desde período ", desde_periodo, "hasta", hasta_periodo),
+         x = "periodo",
+         y = "Resultado (valor)",
+         color = "Grupo") +  # Etiqueta para la leyenda
+
+    guides(linetype = "none")+  # Desactiva la leyenda para linetype 
+    scale_color_manual(values = c(`0` = "blue", `1` = "red", `2` = "lightcoral"),
+                       labels = c(`0` = "referencia", `1` = "Tratamiento", '2' = "Contrafáctico")) +  # Etiquetas para la leyenda
+    
+    scale_x_continuous(breaks = seq(min(data_filtrada$periodo), max(data_filtrada$periodo), by = 1)) +  # periodos enteros
+    
+    theme_minimal() +
+    
+    theme(legend.position = "top")  # Posicionar la leyenda en la parte superior
+  
+   # Si puntos es TRUE, agregar los puntos al gráfico
+ 
+  # Si casos > 0, agregar las líneas para la evolución de cada id
+  if (casos > 0) {
+       p <- p + geom_line(aes(group = interaction(grupo, id)), 
+                     alpha = 0.8)    # Línea de evolución para cada elemento (id) dentro de su grupo
+  }
+  else {
+    if (puntos) {
+           #los puntos sólo se muestran si no se analiza caso por caso
+         p <- p + geom_jitter(alpha = 0.5, width = 0.2)  # Puntos dispersos
+    }
+  }
+  
+  # Agregar la línea de promedio por grupo (siempre)
+  p <- p + 
+  stat_summary(fun = mean, geom = "line", aes(group = grupo, linetype=grupo), 
+               linewidth = 1.5) + 
+    # Línea punteada para el contrafáctico
+  guides(linetype = "none")  # Desactiva la leyenda para linetype
+  
+  
+ 
+  # Mostrar el gráfico
+  print(p)
+}
+
+data_con_contrafacticos=function (data) {
+  #Agrega a data registros contrafácticos para el grupo 1 en base a las diferencias
+  # que tenía con el grupo 0 en el mes previo al tratamiento
+  
+  # Identificar el último período con tratamiento = 0 para id_grupo = 1
+  ultimo_periodo <- data %>%
+    filter(id_grupo == 1, tratamiento == 0) %>%
+    summarise(ultimo_periodo = max(periodo)) %>%
+    pull(ultimo_periodo)
+  # Calcular promedios por grupo en el último período
+  promedios <- data %>%
+    filter(periodo == ultimo_periodo) %>%
+    group_by(id_grupo) %>%
+    summarise(promedio_valor = mean(valor, na.rm = TRUE))
+    # Extraer los promedios de los grupos
+  promedio_grupo0 <- promedios %>% filter(id_grupo == 0) %>% pull(promedio_valor)
+  promedio_grupo1 <- promedios %>% filter(id_grupo == 1) %>% pull(promedio_valor)
+  
+  # Calcular la diferencia
+  diferencia_promedios <- promedio_grupo1 - promedio_grupo0
+  
+  # Filtrar registros de id_grupo = 0 con periodo > último periodo y convertirlos en contrafácticos
+  nuevos_registros <- data %>%
+    filter(id_grupo == 0, periodo >= ultimo_periodo) %>%
+    mutate(
+      id_grupo = 2,  # Cambiar id_grupo a 2
+      grupo= as.factor(2),
+      nom_grupo=paste0(nom_grupo,"_cfactico"),
+      tratamiento=0,
+      valor = valor + diferencia_promedios  # Ajustar el valor con la diferencia
+    )
+
+  # Agregar los nuevos registros al dataset original
+  data <- bind_rows(data, nuevos_registros)
+  return(data)
+
+  
+}
+
+```
+### Obtener periodo de tratamiento de los datos
+Dado un dataset, permite deducir en qué período se aplicó el tratamiento.
+```{r oeriodo_tratamiento}
+periodo_tratamiento=function(data){
+  # obtiene el período de tratamiento fijándose en el grupo 1 (de tratamiento)
+  # el mes en que empieza a tener tratamiento=1
+    
+  grupo1 <- subset(data, id_grupo == 1)
+  # Encontrar el mínimo periodo donde tratamiento = 1
+  periodo_trat <- min(grupo1$periodo[grupo1$tratamiento == 1])
+  return (periodo_trat)
+
+}
+```
+
+  
+
+### Seleccionar grupos
+Arma un dataset (para graficar, para hacer regresión etc) con un grupo de tratamiento y uno de referencia.<BR>
+
+```{r seleccionar_grupos}
+seleccionar_grupos=function(
+    grupo1=data.frame(),           # grupo de tratamiento
+    grupo2=data.frame())           # grupo de referencia
+  {
+ # junta dos grupos. El primero pasa a ser el de tratamiento (1) y el 2do el de referencia (0)
+ return (
+   rbind(
+    grupo1 %>% mutate(id_grupo=1) %>% mutate(grupo=as.factor(1)),
+    grupo2 %>% mutate(id_grupo=0) %>% mutate(grupo=as.factor(0))
+  )
+ )
+}
+```
+
+## Armar grupos
+Aquí dejamos preparados varios grupos para usarlos más adelante. Se incluye grupos con y sin tratamiento:<BR>
+<BR>
+Para hacer más claras las comparaciones, algunos valores son idénticos en todos los grupos:
+- y0 ordenada al origen:                       11,14
+- dif1: diferencia entre los grupos paralelos:  0.8
+- n_unidades: 50
+- n_periodos: 10
+- Salto:     -0,5
+- periodo_trat   5
+
+<H3> Grupos para referencia:</H3>
+parejoConShock       Sin tratamiento. Schock en mes_trat comparable a un salto de intervencion.
+parejoSinShock       Sin tratamiento. Valor estable.
+subiendoSinShock     Con pendiente 0.5
+curvaSinShock        Cúbico, con velocidad inicial 0, aceleración 0.8 y der 3era=-0,3
+
+<H3> Grupos para Tratamiento</H3>
+Todos los siguientes grupos tienen tratamiento en periodo_trat, con el consiguiente salto.
+parejoConTratamiento      Estable.
+subiendoConTratamiento    Con pendiente 0.5
+curvaConTratamiento       Similar a la curvaSinSchok, pero con tratamiento
+bajandoConstante          Con un salto menor y un punto a arranque y pendiente que disimulen el efecto del tratamiento
+
+```{r armar_grupos}
+dict_grupos=list()           # inicializa diccionario de grupos
+
+set.seed(123) # Para reproducibilidad
+# valores base
+n_unidades=50          # cantidad de mediciones
+n_periodos=8             # cantidad total de periodos
+                         # pre tratamiento
+y0 = 11.94               # ordenada al origen base
+vPre =0                  # pendiente sin tratamiento
+aPre = 0                 # aceleración
+d3Pre=0                  # derivada 
+                         # cambios por el tratamiento
+dcambia=0                # derivada que cambia con el tratamiento
+dnueva= 0                # nuevo valor de la derivada que cambia
+salto = 11.14-11.94+.3
+# salto de valor debido al tratamiento entre periodo m_trat y el siguiente
+sd=0.2                      # desvío estándar de los valores
+periodo_trat=5               # periodo del tratamiento (o Inf si no lo recibe)
+dif1=-0.8
+
+#referencia
+parejoConShock= grupo_sintetico(
+      nom_grupo='parejoConShock',
+      n_unidades=n_unidades,
+      n_periodos=n_periodos,
+      y0 = y0+dif1,
+      shocks=list(
+        '5'=salto)
+  )
+parejoSinShock=grupo_sintetico(
+      nom_grupo='parejoSinShock',
+      n_unidades=n_unidades,
+      n_periodos=n_periodos,
+      y0 = y0+dif1,
+  )
+subiendoSinShock=grupo_sintetico(
+      nom_grupo='subiendoSinShock',
+      n_unidades=n_unidades,
+      n_periodos=n_periodos,
+      y0 = y0+dif1,
+      vPre=0.5
+  )
+curvaSinShock=grupo_sintetico(
+      nom_grupo='curvaSinShock',
+      n_unidades=n_unidades,
+      n_periodos=n_periodos,
+      y0 = y0+dif1,
+      vPre=0,
+      aPre=0.8,
+      d3Pre=-0.3
+)
+      
+
+# Tratamiento
+parejoConTratamiento= grupo_sintetico(
+      nom_grupo='parejoConTratamiento',
+      n_unidades=n_unidades,
+      n_periodos=n_periodos,
+      y0 = y0,
+      periodo_trat=periodo_trat,
+      salto = salto,
+ )
+subiendoConTratamiento = grupo_sintetico(
+      nom_grupo='subiendoConTratamiento',
+      n_unidades=n_unidades,
+      n_periodos=n_periodos,
+      y0 = y0,
+      vPre=0.5,
+      periodo_trat=periodo_trat,
+      salto = salto,
+  )
+ 
+curvaConTratamiento = grupo_sintetico(
+      nom_grupo='curvaConTratamiento',
+      n_unidades=n_unidades,
+      n_periodos=n_periodos,
+      y0 = y0,
+      vPre=0,
+      aPre=0.8,
+      d3Pre=-0.3,
+      
+      periodo_trat=periodo_trat,
+      salto = salto,
+  )
+
+bajandoConstante=grupo_sintetico(
+      nom_grupo='bajandoConstante',
+      n_unidades=n_unidades,
+      n_periodos=n_periodos,
+      y0 = y0+dif1-(salto/1.1)*mes_trat,
+      vPre=salto/1.1,
+      salto=salto/3,
+      periodo_tra=periodo_trat
+ )
+
+
+```
+# El efecto de una intervención
+
+Los accidentes de tránsito son la principal causa de muerte entre jóvenes de 18 a 35 y afecta seriamente a las demás franjas de población.<BR>
+Se calcula que, a nivel nacional, la tasa de víctimas fatales es de alrededor de 9 cada 100.000 habitantes.<BR>
+La de Salta, la más alta del país, es de 11.94.<BR><BR>
+Hasta aquí, datos reales. Ahora empezamos a imaginar escenarios.<BR><BR>
+Salta decide aumentar severamente las multas por infracciones de tránsito en la esperanza de que esto tenga impacto en la siniestralidad. Vamos a ubicar estos evento en una escala temporal arbitraria que empieza en el período 1, y suponemos que la medida de Salta entra en vigor en el período 5.<BR<BR>
+
+Las autoridades quieren evaluar el impacto de esta intervención.
+
+
+### Dos grupos estables, uno con tratamiento y el otro con shock
+#### Efecto inmediato presunto del tratamiento
+```{r graficar}
+data=seleccionar_grupos( parejoConTratamiento, parejoConShock)
+graficar_data(data,
+              desde_periodo=periodo_trat-1,
+              hasta_periodo= periodo_trat,
+              grupos=c(1),
+              casos=0,
+              puntos=FALSE
+)
+```
+Hubo efectivamente un descenso de las víctimas fatales.<BR>
+Los críticos sostienen que no basta con ver este resultado, porque quizás la siniestralidad ya venía descendiendo sin la intervención del gobierno.<BR>
+
+#### Posible historia previa
+```{r}
+graficar_data(data,
+              desde_periodo=periodo_trat-4,
+              hasta_periodo= periodo_trat,
+              grupos=c(1),
+              puntos=FALSE,
+              casos=0
+)
+```
+Un examen de la historia previa sugiere que no es éste el caso: la baja no es resultado de una tendencia previa.<BR>
+<BR>
+
+###@ Una historia previa diferente
+Distinto hubiese sido el caso si al examinar la evolución previa viéramos lo siguiente:<BR>
+
+```{r}
+data=seleccionar_grupos( bajandoConstante)
+
+graficar_data(data,
+              desde_periodo=periodo_trat-4,
+              hasta_periodo= periodo_trat,
+              grupos=c(1),
+              puntos=FALSE,
+              contrafactico=TRUE
+)
+```
+Las críticas continúan y señalan que en el período en cuestión hubo un aumento importante del precio de las naftas que podría haber reducido el tránsito y la siniestralidad. <BR>
+Tucumán es una provincia vecina y similar a Salta. ¿Qué pasó con ella?
+
+#### Comparación con grupo de referencia
+```{r}
+data=seleccionar_grupos( parejoConTratamiento, parejoConShock)
+graficar_data(data,
+              desde_periodo=periodo_trat-3,
+              hasta_periodo= periodo_trat,
+              grupos=c(0, 1),
+              puntos=FALSE
+)
+```
+
+Tucumán tiene un nivel de siniestralidad menor, pero un comportamiento comparable al de Salta: hasta el período de la intervención las muertes en accidentes se mantenían aproximadamente constantes y en ese período bajaron en forma similar. Pero en Tucumán no se legisló el cambio de multas...<BR>
+Aparentemente, el descenso de la siniestralidad en Salta fue parte de un proceso que afectó a otras provincias similares donde el tratamiento no se aplicó.<BR>
+
+#### Mismo caso pero con referencia sin Shock
+
+Distinta sería la situación en un caso como este:<BR>
+
+
+
+```{r referencia_sin_shock}
+data=seleccionar_grupos( parejoConTratamiento, parejoSinShock)
+
+graficar_data(data,
+              desde_periodo=periodo_trat-3,
+              hasta_periodo= periodo_trat,
+              grupos=c(0, 1),
+              puntos=FALSE,
+              contrafactico=TRUE
+)
+
+```
+Las líneas punteadas muestran lo que, presuntamente, hubiese ocurrido con el grupo de interés si no se le hubiese aplicado el tratamiento. <BR>
+En este caso, ambos grupos venían evolucionando en forma paralela pero en el período de tratamiento, el grupo de tratamiento redujo su tasa de víctimas en tanto el de referencia la mantuvo.<BR>
+Dada la evolución paralela de ambos grupos, se supone que el grupo de tratamiento, si no lo hubiese recibido, hubiese evolucionado en forma similar al del referencia.< Se trata de un razonamiento contrafáctico y la evolució en cuestión es la que se muestra en color más claro y con línea punteada.<BR>
+<BR>
+<BR>
+### Evoluciones previas lineales o no lineales
+<BR>
+La situación sería similar aunque hubiese alguna evolución en el período previo al tratamiento:<BR>
+```{r}
+data=seleccionar_grupos( subiendoConTratamiento, subiendoSinShock)
+
+graficar_data(data,
+              desde_periodo=periodo_trat-3,
+              hasta_periodo= periodo_trat,
+              grupos=c(0, 1),
+              puntos=FALSE,
+              contrafactico=TRUE
+)
+```
+De hecho, las historias previas de ambos grupos podrían ser paralelas y con otras formas.
+
+```{r}
+data=seleccionar_grupos( curvaConTratamiento, curvaSinShock)
+
+graficar_data(data,
+              desde_periodo=periodo_trat-5,
+              hasta_periodo= periodo_trat+1,
+              grupos=c(0, 1),
+              puntos=FALSE,
+              contrafactico=TRUE
+)
+```
+# DID: diferencias en diferencias
+
+La idea del método de diferencias en diferencias es sencilla. <BR>
+
+El supuesto básico es que los dos grupos vienen evolucionando en forma paralela, de modo que las diferencias entre ellos son constantes.<BR>
+Se calcula esta diferencia: llamémosla diferencia_pre.<BR>
+Se calcula la diferencia post tratamiento entre ambos. Llamémosla diferencia_post<BR>
+Se supone entonces que la verdadera diferencia provocada por la intervención es la diferencia entre ellas: diferencia_post-diferencia_pre. De ahí el nombre de diferencia en diferencias.<BR>
+<BR>
+<BR> Existe, sin embargo, un segundo supuesto, y es que ambos grupos estuvieron sometidos, durante el período de tratamiento, a los mismos shocks, de modo que pueda concluirse los cambios en la distancia entre ambos (la DID) se explique por la intervención y no por otra causa.<BR>
+
+
+## Diferencias por lm
+Esta función toma dos grupos (uno de tratamiento y uno de referencia), los grafica y hace la regresión correspondiente.<BR>
+Si mod='basico' trabaja sólo con el mes previo a la intervención y el de la intervención misma.<BR>
+Si no, trabaja con toda la historia (previa y posterior) disponible.<BR>
+```{r funcion de diferencias por lm}
+diferencias_lm <- function (
+    grupo1,       # grupo de tratamiento
+    grupo0,       # grupo de referencia
+    mod ='basico',  # basico: sólo los meses pre y post tratamiento
+                     # periodos: por períodos
+                     # no_paralelos: con variable periodo*grupo
+    decimales=-1     #
+    )
+  {
+  data=seleccionar_grupos(grupo1, grupo0)
+  periodo_trat=periodo_tratamiento(data)
+  data$post_trat <- ifelse(data$periodo >= periodo_trat, 1, 0)  #periodos post tratamiento
+  if (mod=='basico'){
+    data <- data %>%
+         filter(periodo %in% c(periodo_trat - 1, periodo_trat))
+  }
+
+  graficar_data(data,
+              desde_periodo=periodo_trat-3,
+              hasta_periodo= periodo_trat+1,
+              grupos=c(0, 1),
+              casos=10,
+              puntos=TRUE,
+              contrafactico=FALSE
+)
+
+  # Crear variables de tratamiento y periodo
+  data <- data %>%
+          # Indicador de que el período es post tratamiento
+    mutate(post_tratamiento = ifelse(periodo >= periodo_trat, 1, 0),
+           # Indicador de que se aplicó el tratamiento
+           did = id_grupo * post_tratamiento,  # Interacción
+           # Indicador de si es el grupo de tratamiento
+           grupo_trat = id_grupo
+    )
+
+  # Ajustar el modelo de regresión 
+  modelo_basico <- lm(valor ~ grupo_trat + post_trat + did, data = data)
+  modelo_periodos <- lm(valor ~ grupo_trat + periodo + did, data = data)
+  
+  data$fx <- factor(data$grupo_trat, levels = c(0, 1), labels = c("Ref", "Tr"))
+
+  modelo_no_paralelos <- lm(valor ~grupo_trat + periodo:fx + did, data=data)
+ 
+  if (mod=='basico'){modelo_did=modelo_basico}
+  else {
+    if (mod=='periodos') {modelo_did=modelo_periodos}
+      else  { modelo_did=modelo_no_paralelos}
+  }
+
+
+
+  # Resumen del modelo
+  print (glance(modelo_did))
+  tidy_resultado=tidy(modelo_did, conf.int=TRUE)
+  # Limitar la cantidad de decimales a 2
+  if (decimales>0) {
+  tidy_resultado <- tidy_resultado %>%
+    mutate(across(where(is.numeric), ~ round(.x, decimales)))
+  }
+  tidy_traspuesto <- as.data.frame(t(column_to_rownames(tidy_resultado, var = "term")))
+  tidy_traspuesto
+
+ 
+}
+```
+### parejo vs parejo sin shock
+En este caso, ambos grupos son estables salvo por el impacto del tratamiento en el grupo pertinente.<BR>
+```{r}
+diferencias_lm( parejoConTratamiento, parejoSinShock, mod='basico')
+```
+### parejo vs parejo con shock
+En este caso, ambos grupos son estables salvo por el impacto del tratamiento en el grupo pertinente y por un shock que afecta a ambos grupos en el mismo período de tratamiento.<BR>
+En este caso, el modelo usado es básico (sólo 2 períodos)
+```{r}
+diferencias_lm( parejoConTratamiento, parejoConShock, mod='basico')
+```
+### parejo vs parejo con shock
+Con los mismos datos que el anterior, pero usando el modelo de períodos, donde se supone que hay una evolución lineal de base.<BR>
+
+```{r}
+diferencias_lm( parejoConTratamiento, parejoConShock, mod='periodos')
+```
+### subiendo vs subiendo sin shock
+El modelo básico de 2 meses aplicado a dos casos con tendencia previa ascendente.<BR>
+```{r}
+diferencias_lm( subiendoConTratamiento, subiendoSinShock, mod='basico')
+```
+
+## subiendo vs parejo sin shock
+El modelo períodos aplicado a dos casos con tendencia previa diferente.<BR>
+La falta de paralelismo previo afecta los resultados<BR>
+```{r}
+diferencias_lm( subiendoConTratamiento, parejoSinShock, mod='periodos')
+
+
+```
+En cambio, si se incluye el termino de grupo_trat*periodo
+```{r}
+diferencias_lm( parejoConTratamiento, subiendoSinShock, mod='no_paralelos', decimales=2)
+```

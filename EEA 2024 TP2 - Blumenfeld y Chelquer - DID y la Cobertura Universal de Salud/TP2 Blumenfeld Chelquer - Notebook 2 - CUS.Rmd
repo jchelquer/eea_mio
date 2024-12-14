@@ -1,0 +1,373 @@
+---
+title: "tp final"
+author: "José Chelquer, Alejandro Blumenfeld"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+El objetivo principal del presente reporte es evaluar el efecto causal de la intervención Cobertura Universal de Salud (CUS) sobre el tratamiento de personas con Diabetes, como manera de ilustrar el enfoque analítico de Diferencias en Diferencias (DiD).
+El foco está puesto en inferencia causal, no en el armado de un modelo predictivo.
+
+
+## 1. Carga de datos y reformateo de variables
+
+Realizamos la carga de las bases de las 4 encuestas, unificamos nombres de variables y reformateamos. Filtramos para retener sólo personas con diabetes. Creamos la variable CUS para englobar las provincias con implementación temprana de CUS.
+
+```{r , warning=FALSE, message = FALSE }
+pacman::p_load(tidyverse, readr, jtools, ggplot2, survey, gtsummary, srvyr, svydiags, srvyrexploR, knitr, tidymodels, broom, skimr)
+
+df05 <- read_delim("C:/Users/USER/Desktop/Ale/Medicina/Doctorado/EEA/TP final/bases enfr/enfr2005.txt", 
+                   delim = "|", escape_double = FALSE, trim_ws = TRUE)
+
+df09 <- read_delim("C:/Users/USER/Desktop/Ale/Medicina/Doctorado/EEA/TP final/bases enfr/enfr2009.txt", 
+                   delim = "|", escape_double = FALSE, trim_ws = TRUE)
+
+df13 <- read_delim("C:/Users/USER/Desktop/Ale/Medicina/Doctorado/EEA/TP final/bases enfr/enfr2013.txt", 
+                       delim = "|", escape_double = FALSE, trim_ws = TRUE)
+
+df18 <- read_delim("C:/Users/USER/Desktop/Ale/Medicina/Doctorado/EEA/TP final/bases enfr/enfr2018.txt", 
+                       delim = "|", escape_double = FALSE, trim_ws = TRUE)
+
+
+dbt05 <- df05 |> rename(tto_dbt = CIDI03, pcia = PROV, w = PONDERACION, ingreso = ITF_UC_QUINTILES, educacion = NIVINSTR, edad = CHCH05, genero = CHCH04, cobertura = CS) |> 
+  filter(CIDI01 == 1) |> 
+  mutate(t = "2005") |> mutate(across(c(pcia, ingreso), as.factor)) |> 
+  mutate(vivienda = ifelse(CHCV01  %in% c(1,3),0,1)) |> 
+  mutate(cus = ifelse(pcia %in% c(22,82,74,26,30,14,42,62,78,94,90,10,58), 0, 1)) |> mutate(cus = as.factor(cus)) |>
+  mutate(educacion = ifelse(educacion == 8, 0,
+                              ifelse(educacion >= 1 & educacion <= 3, 0, 
+                                     ifelse(educacion >= 4 & educacion <= 7, 1, NA)))) |> 
+  mutate(cobertura = ifelse(cobertura %in% c(6,8,9),0,1)) |> 
+  dplyr::select(tto_dbt, cus, pcia, t, w, vivienda, cobertura, ingreso, educacion, edad, genero) |> 
+  mutate(tto_dbt = case_when(tto_dbt == 2 ~ 0, TRUE ~ as.numeric(tto_dbt)))
+
+
+dbt09 <- df09 |>  rename(tto_dbt = BIDI03, pcia = PRVNC, w = PONDERACION, ingreso = ITF_UC_QUINTILES, educacion = NIVINSTR, edad = BHCH05, genero = BHCH04, cobertura = COB_SALUD) |> 
+  filter(BIDI01 == 1) |> 
+  mutate(t = "2009") |> mutate(across(c(pcia, ingreso), as.factor)) |>  
+  mutate(vivienda = ifelse(BHCV01  %in% c(1,3),0,1)) |>
+  mutate(cus = ifelse(pcia %in% c(22,82,74,26,30,14,42,62,78,94,90,10,58), 0, 1)) |> mutate(cus = as.factor(cus)) |>
+  mutate(educacion = ifelse(educacion == 8, 0,
+                            ifelse(educacion >= 1 & educacion <= 3, 0, 
+                                   ifelse(educacion >= 4 & educacion <= 7, 1, NA)))) |> 
+  mutate(cobertura = ifelse(cobertura %in% c(6,8,9),0,1)) |>
+  dplyr::select(tto_dbt, cus, pcia, t, w, vivienda, cobertura, ingreso, educacion, edad, genero) |> 
+  mutate(tto_dbt = case_when(tto_dbt == 2 ~ 0, TRUE ~ as.numeric(tto_dbt)))
+
+dbt13 <- df13 |> rename(tto_dbt = BIDI03, pcia = COD_PROVINCIA, w = PONDERACION, ingreso = ITF_UC_QUINTILES, educacion = NIVEL_INSTRUCCION, edad = BHCH05, genero = BHCH04, cobertura = COBERTURA_SALUD) |> 
+  filter(BIDI01 == 1) |> 
+  mutate(t = "2013") |> mutate(across(c(pcia, ingreso), as.factor)) |>  
+  mutate(vivienda = ifelse(BHCV01  %in% c(1,3),0,1)) |>
+  mutate(cus = ifelse(pcia %in% c(22,82,74,26,30,14,42,62,78,94,90,10,58), 0, 1)) |> mutate(cus = as.factor(cus)) |>
+  mutate(educacion = ifelse(educacion == 8, 0,
+                            ifelse(educacion >= 1 & educacion <= 3, 0, 
+                                   ifelse(educacion >= 4 & educacion <= 7, 1, NA)))) |> 
+  mutate(cobertura = ifelse(cobertura %in% c(2,9),0,1)) |>
+  dplyr::select(tto_dbt, cus, pcia, t, w, vivienda, cobertura, ingreso, educacion, edad, genero) |> 
+  mutate(tto_dbt = case_when(tto_dbt == 2 ~ 0, TRUE ~ as.numeric(tto_dbt)))
+
+dbt18 <- df18 |>  rename(tto_dbt = bidi03, pcia = cod_provincia, w = wf1p, ingreso = quintil_uc, educacion = nivel_instruccion, edad = bhch04, genero = bhch03, cobertura = cobertura_salud) |> 
+  filter(bidi01 == 1) |> 
+  mutate(t = "2018") |> mutate(across(c(pcia, ingreso), as.factor)) |> 
+  mutate(vivienda = ifelse(bhcv01  %in% c(1,3),0,1)) |>
+  mutate(cus = ifelse(pcia %in% c(22,82,74,26,30,14,42,62,78,94,90,10,58), 0, 1)) |> mutate(cus = as.factor(cus)) |>
+  mutate(educacion = ifelse(educacion == 8, 0,
+                            ifelse(educacion >= 1 & educacion <= 3, 0, 
+                                   ifelse(educacion >= 4 & educacion <= 7, 1, NA)))) |> 
+  mutate(cobertura = ifelse(cobertura %in% c(2,9),0,1)) |>
+  dplyr::select(tto_dbt, cus, pcia, t, w, vivienda, cobertura, ingreso, educacion, edad, genero) |> 
+  mutate(tto_dbt = case_when(tto_dbt == 2 ~ 0, TRUE ~ as.numeric(tto_dbt)))
+
+dbt <- rbind(dbt05, dbt09, dbt13, dbt18)
+dbt <- dbt |> mutate(post = ifelse(t == "2018",1,0)) |> mutate(genero = ifelse(genero == 2,0,1)) |> mutate(t = as.factor(t))
+nombre_pcia <- c("2" = "caba", "6" = "bsas", "10" = "catamarca", "14" = "cordoba", "18" = "corrientes", "22" = "chaco",
+                 "26" = "chubut", "30" = "entre_rios", "34" = "formosa", "38" = "jujuy", "42" = "la_pampa", "46" = "la_rioja", "50" = "mendoza", 
+                 "54" = "misiones", "58" = "neuquen", "62" = "rio_negro", "66" = "salta", "70" = "san_juan", 
+                 "74" = "san_luis", "78" = "santa_cruz", "82" = "santa_fe", "86" = "santiago", "90" = "tucuman", "94" = "t_del_fuego")
+dbt <- dbt %>%
+  mutate(pcia = recode_factor(pcia, !!!nombre_pcia))
+
+skim(dbt)
+
+```
+
+## 2. Declarar encuesta compleja como diseño de la base
+
+Dado que la base provino de encuestas de diseño en etapas, el objeto debe ser declarado con el paquete {survey}.
+
+```{r , warning=FALSE, message = FALSE }
+dbt2 <- svydesign(
+  id = ~1,          
+  strata = ~pcia,      
+  weights = ~w,      
+  data = dbt,
+  nest = TRUE             
+)
+
+```
+
+## 3. Descripción de variables
+
+```{r , warning=FALSE, message = FALSE }
+
+dbt4 <- dbt %>%
+  as_survey_design(
+    weights = w,
+    strata = pcia,
+    ids = 1,
+    nest = TRUE
+  )
+dbt4 %>%
+  group_by(pcia) %>%
+  summarise(
+    n_total = survey_total(vartype = NULL),
+    n_tto_dbt_1 = survey_total(tto_dbt == 1, vartype = NULL),
+    proporcion_global_tratados = round(n_tto_dbt_1 * 100/n_total,1)) |>   
+      print(n = 24)
+
+dbt3 <- as_survey(dbt2)
+
+ggplot(dbt3, aes(x = edad, weight = w)) +
+  geom_histogram(binwidth = 5, fill = "blue", alpha = 0.7, color = "black") +
+  labs(title = "Distribución Ponderada de Edad", x = "Edad", y = "Recuento ponderado") +
+  theme_minimal()
+
+confint(svymean(~cus + tto_dbt + cobertura + vivienda, dbt2))
+
+dbt3 %>%
+  group_by(cus, tto_dbt) %>%
+  summarize(proportion = survey_mean()) %>%
+  ggplot(aes(x = factor(tto_dbt), y = proportion, fill = factor(cus))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Proporción Ponderada de Tratamiento según Grupo CUS",
+       x = "Tratamiento de Diabetes", y = "Proporcion",
+       fill = "Grupo CUS") +
+  theme_minimal()
+
+```
+
+Tabla 1
+
+```{r , warning=FALSE, message = FALSE }
+# Definición de categorias de variables
+numeric_vars <- "edad"
+binary_vars <- c("genero", "tto_dbt", "cobertura", "vivienda", "educacion")
+
+# Funciones para medidas de resumen de variables numericas y categoricas
+summarize_numeric <- function(var) {
+  dbt3 %>%
+    group_by(cus) %>%
+    summarize(
+      mean = survey_mean(.data[[var]], na.rm = TRUE),  
+      se = survey_sd(.data[[var]], na.rm = TRUE),      
+      .groups = "drop"
+    ) %>%
+    mutate(
+      Variable = var,
+      Summary = sprintf("%.2f ± %.2f", mean, se)
+    ) %>%
+    dplyr::select(Variable, cus, Summary)
+}
+
+summarize_binary <- function(var) {
+  dbt3 %>%
+    group_by(cus) %>%
+    summarize(
+      proportion = survey_mean(.data[[var]], na.rm = TRUE),  
+      .groups = "drop"
+    ) %>%
+    mutate(
+      Variable = var,
+      Summary = sprintf("%.1f%%", proportion * 100)
+    ) %>%
+    dplyr::select(Variable, cus, Summary)
+}
+
+# Armado de Tabla 1
+table1_numeric <- lapply(numeric_vars, summarize_numeric) %>% bind_rows()
+table1_binary <- lapply(binary_vars, summarize_binary) %>% bind_rows()
+
+table1 <- bind_rows(table1_numeric, table1_binary) %>%
+  pivot_wider(names_from = cus, values_from = Summary, names_prefix = "cus_") %>%
+  arrange(Variable)
+
+kable(table1, format = "markdown", caption = "Tabla 1: Medidas de resumen según grupo CUS")
+
+```
+
+## 4. Visualización de Proporciones (marginales) de Tratamiento según grupo CUS
+
+Graficamos las proporciones de personas tratadas según año de encuesta ENFR y grupo.
+
+```{r , warning=FALSE, message = FALSE }
+
+prevalence <- svyby(
+  ~tto_dbt,                     
+  ~cus + t,                     
+  dbt2,                
+  svymean,                      
+  na.rm = TRUE                  
+)
+
+prevalence_df <- as.data.frame(prevalence)
+colnames(prevalence_df) <- c("cus", "t", "prevalence", "se")
+prevalence_df <- prevalence_df %>%
+  mutate(
+    lower_ci = prevalence - 1.96 * se,
+    upper_ci = prevalence + 1.96 * se
+  )
+
+ggplot(prevalence_df, aes(x = t, y = prevalence, color = as.factor(cus), group = cus)) +
+  geom_line(linewidth = 1) +  # Use `linewidth` instead of `size`
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = prevalence - 1.96 * se, ymax = prevalence + 1.96 * se), width = 0.2) +
+  labs(
+    title = "Prevalencia de Tratamiento de Diabetes según grupo y año",
+    x = "Año de ENFR",
+    y = "Prevalencia de Tratamiento de Diabetes",
+    color = "Grupo (CUS)"
+  ) +
+  theme_minimal() + ylim(0.25, 0.8) + geom_segment(aes(y = 0.4, yend = 0.75, x = 3.5), linetype = "dashed", color = "black") + annotate("text", x = 3.5, y = 0.77, label = "inicio CUS", color = "black", size = 3.5)
+  
+
+```
+
+## 5. Modelos para efecto de CUS
+
+Modelo 1. Modelo reducido, sin agregado de otras variables que controlen confounding
+
+El efecto DiD es el coeficiente del término de interacción "CUS * post".
+
+El término "t*pcia" permite relajar la asunción de tendencias previas paralelas, al permitir el aporte al modelo de un componente de trayectorias individuales por provincia, según se detalla en "Mastering Metrics" (Angrist & Pischke, 2015).
+
+Como la muestra proviene de una encuesta compleja, utilizamos el comando `svyglm` del paquete {survey}. 
+
+```{r, warning=FALSE, message = FALSE}
+
+modelo1 <- svyglm(tto_dbt ~ cus * post + t*pcia, design = dbt2, family = quasibinomial)
+
+modelo1_tidy <- tidy(modelo1, conf.int = TRUE, conf.level = 0.95) 
+modelo1_tidy <- modelo1_tidy |> mutate(OR = exp(estimate), OR_lower = exp(conf.low), OR_upper = exp(conf.high))
+modelo1_tabla <- modelo1_tidy |>  filter(term %in% c("cus1:post"))
+kable(modelo1_tabla, format = "markdown", caption = "Efecto DiD")
+
+```
+
+El Odds Ratio (OR) = 0.15 indica que, independientemente de las otras variables incluidas, el ratio de Odds de tratamiento es de 0.15 en grupo intervención (CUS) respecto de grupo control (No-CUS). Es decir, CUS reduciría chances de tratamiento de la diabetes. 
+
+
+
+Modelo 2. Modelo expandido con control de confounding
+
+Siguiendo el modelo expresado en el DAG, expandimos el modelo 1 para incluir variables confundidoras observadas. Algunas variables del modelo son no-observadas (ej. calidad de gestión provincial) pero el DAG revela que con las variables disponibles el control de confounding es adecuado a la estimación objetivo.
+
+```{r, warning=FALSE, message = FALSE}
+
+knitr::include_graphics("C:/Users/USER/Desktop/Ale/Medicina/Doctorado/EEA/TP final/dag.png")
+
+```
+
+
+```{r, warning=FALSE, message = FALSE}
+
+modelo2 <- svyglm(tto_dbt ~ cus * post + t*pcia + edad + genero + educacion + ingreso + cobertura, design = dbt2, family = quasibinomial)
+modelo2_tidy <- tidy(modelo2, conf.int = TRUE, conf.level = 0.95) 
+modelo2_tidy <- modelo2_tidy |> mutate(OR = exp(estimate), OR_lower = exp(conf.low), OR_upper = exp(conf.high))
+modelo2_tabla <- modelo2_tidy |>  filter(term %in% c("cus1:post", "edad", "genero", "educacion", "ingreso", "cobertura")) |> print(width = Inf)
+kable(modelo2_tabla, format = "markdown", caption = "Efecto DiD de Modelo Expandido")
+
+```
+
+
+Evaluamos un 3er modelo, en caso de que la variable "vivienda", que representando vivienda inadecuada -parte del constructo Necesidades Basicas Insatisfechas -NBI- pudiera agregar algun ajuste extra a lo ya conocido en base a variables ingreso y educacion. (No se pudo agregar NBI directamente por faltar en alguna de las ediciones de la ENFR).
+
+Modelo 3. Modelo expandido agregando vivienda
+
+```{r, warning=FALSE, message = FALSE}
+
+modelo3 <- svyglm(tto_dbt ~ cus * post + t*pcia + edad + genero + educacion + ingreso + cobertura + vivienda, design = dbt2, family = quasibinomial)
+modelo3_tidy <- tidy(modelo3, conf.int = TRUE, conf.level = 0.95) 
+modelo3_tidy <- modelo3_tidy |> mutate(OR = exp(estimate), OR_lower = exp(conf.low), OR_upper = exp(conf.high))
+modelo3_tabla <- modelo3_tidy |>  filter(term %in% c("cus1:post", "edad", "genero", "educacion", "ingreso", "cobertura", "vivienda")) |> print(width = Inf)
+kable(modelo3_tabla, format = "markdown", caption = "Modelo Expandido agregando Vivienda")
+
+```
+
+## 6. Comparación de Modelos 
+
+Comparamos los modelos utilizando los parámetros AIC, BIC y deviance.
+
+```{r, warning=FALSE, message = FALSE}
+modelos <- list("Modelo 1" = modelo1, "Modelo 2" = modelo2, "Modelo 3" = modelo3)
+modelos_resumen <- map_df(modelos, glance, .id = "Model")
+kable(modelos_resumen, format = "markdown", caption = "Comparación de modelos")
+
+```
+
+Evaluamos los 3 modelos logísticos observando caida del AIC, BIC y deviance principalmente entre el modelo basal y el modelo que ajusta por confundidores. El agregado de "vivienda" no parece agregar información.
+
+Exploramos también el uso del parámetro PseudoR2 para comparar Modelos 1 y 2
+
+
+```{r, warning=FALSE, message = FALSE}
+#pseudoR2 Modelo 1
+deviance_fitted1 <- modelo1$deviance
+null_model1 <- update(modelo1, . ~ 1)
+deviance_null1 <- null_model1$deviance
+n1 <- nrow(modelo1$data)
+cox_snell_r2_1 <- 1 - exp((deviance_fitted1 - deviance_null1) / n1)
+nagelkerke_r2_1 <- cox_snell_r2_1 / (1 - exp(-deviance_null1 / n1))
+cat("Nagelkerke's R^2:", nagelkerke_r2_1, "\n")
+
+#pseudoR2 Modelo 2
+deviance_fitted2 <- modelo2$deviance
+null_model2 <- update(modelo2, . ~ 1)
+deviance_null2 <- null_model2$deviance
+n2 <- nrow(modelo2$data)
+cox_snell_r2_2 <- 1 - exp((deviance_fitted2 - deviance_null2) / n2)
+nagelkerke_r2_2 <- cox_snell_r2_2 / (1 - exp(-deviance_null2 / n2))
+cat("Nagelkerke's R^2:", nagelkerke_r2_2, "\n")
+
+
+```
+
+Se observa un aumento del pseudoR2 al agregar variables de ajuste de confounding.
+
+
+## 7. Diagnóstico de regresión ({svydiags})
+
+El área temática de diagnóstico de regresión en encuestas complejas y los procedimientos aplicables en R están menos desarrollados que para muestras simples. En algunos casos el factor de ponderación puede en sí mismo generar patrones potencialmente influyentes.
+Evaluamos gráficamente la distribución de residuales. El comando `svystdres` grafica valores de +3 y -3 como umbrales.
+
+```{r, warning=FALSE, message = FALSE}
+
+invisible(svystdres(modelo2, stvar = "pcia", clvar = NULL, doplot = TRUE))
+
+```
+
+Observando la distribución de residuales, ésta aparece pareja a lo largo de los casos, sin un patrón especial. Existen algunas observaciones con valores extremos (superando los valores de 3 o -3)
+
+Intentamos evaluar qué observaciones pueden estar comportándose como influyentes. Siguiendo la documentación del paquete {svydiags}, calculamos también el pocentaje de observaciones con leverage mayor a 3 veces la media, que nos devuelve un 3%.
+
+```{r, warning=FALSE, message = FALSE}
+
+invisible(svyhat(modelo2, doplot = TRUE))
+h <- svyhat(modelo2, doplot = TRUE)
+100*sum(h > 3*mean(h))/length(h) 
+
+```
+
+Sin embargo, no logramos identificar un comando dentro del análisis de encuestas que nos permita identificar las observaciones con leverage alto que fueran potencialmente influyentes, para calcular si existen modificaciones relevantes de la estimación de efecto del modelo2 al removerlas. 
+
+
+
+## 8. Conclusiones y Limitaciones
+
+- Si bien con los datos obtenidos, la hipótesis principal es que la estrategia CUS redujo la cobertura de tratamiento de personas con diabetes, debemos señalar algunas limitaciones.
+- No pudimos evaluar otros eventos externos potenciales que pudieran haber generado un impacto diferencial y transitorio entre grupos en el período entre 2009 y 2013. 
+- Una hipótesis alternativa es que la diferencia entre grupos en 2013 previa a la CUS haya sido un fenómeno puntual y aislado, observandose luego en 2018 un fenómeno de regresión a la media diferencial para el grupo de provincias con CUS. 
+- El modelo corresponde al DAG planteado, construido en base a conocimiento sobre el tema específico abordado.
